@@ -1,297 +1,128 @@
 #include <stdio.h>
-#include <stdlib.h>
 #include <string.h>
+#include "ex2.h"
 
-#define MAX_STR 100
-#define MAX_BITS 1024
-#define FRAME_SIZE 7
-
-void ascii_to_bin(char ch, char *b) {
-    for (int i = 7; i >= 0; i--) {
-        b[7 - i] = (ch & (1 << i)) ? '1' : '0';
-    }
-    b[8] = '\0';
-}
-
-void str_to_bits(const char *str, char *bits) {
-    int len = strlen(str);
-    char b[9];
-
-    bits[0] = '\0';
-
-    for (int i = 0; i < len; i++) {
-        ascii_to_bin(str[i], b);
-        strcat(bits, b);
-    }
-}
-
-int ask_parity_scheme() {
+/* scheme 0 = even parity, 1 = odd parity */
+static int ask_parity_scheme(void) {
     int choice;
-
-    printf("Choose parity scheme:\n");
-    printf("1. Even Parity\n");
-    printf("2. Odd Parity\n");
-    printf("Enter choice: ");
+    printf("Choose parity scheme -> 1: Even Parity   2: Odd Parity : ");
     scanf("%d", &choice);
-
-    return (choice == 2) ? 1 : 0;
+    return choice == 2;
 }
 
-char compute_parity_bit(int ones_in_data, int scheme) {
-    if (scheme == 0)
-        return (ones_in_data % 2 == 0) ? '0' : '1';
-    else
-        return (ones_in_data % 2 == 0) ? '1' : '0';
+/* even: total number of 1s must become even; odd: must become odd */
+static char parity_bit(int ones, int scheme) {
+    return '0' + ((ones % 2) ^ scheme);
 }
 
-int check_parity_error(int total_ones, int scheme) {
-    if (scheme == 0)
-        return (total_ones % 2 != 0);
-    else
-        return (total_ones % 2 == 0);
+static int no_error(int total_ones, int scheme) {
+    return total_ones % 2 == scheme;
 }
 
-/* Convert 8 binary bits into ASCII character */
-char bin_to_ascii(const char *bits) {
-    int value = 0;
-
-    for (int i = 0; i < 8; i++) {
-        value = value * 2 + (bits[i] - '0');
+/* asks how many bits to flip, then the position of each; records the flipped positions */
+static void simulate_multi_error(char *bits, int *flipped, int *nflips) {
+    int len = strlen(bits), k, count = 0;
+    printf("\nSimulate transmission error(s)\n");
+    printf("How many bits do you want to flip? (0 for NO error): ");
+    scanf("%d", &k);
+    if (k <= 0)
+        printf("No error introduced.\n");
+    for (int i = 0; i < k; i++) {
+        int pos;
+        printf("  Enter bit position #%d to flip (0 to %d): ", i + 1, len - 1);
+        scanf("%d", &pos);
+        if (pos >= 0 && pos < len) {
+            bits[pos] = (bits[pos] == '0') ? '1' : '0';
+            flipped[count++] = pos;
+            printf("    -> Bit at position %d flipped.\n", pos);
+        } else
+            printf("    -> Invalid position %d, ignored.\n", pos);
     }
-
-    return (char)value;
+    *nflips = count;
 }
 
-/* Extract binary data from received frames */
-void extract_received_data(char tx_frames[][16],
-                           int num_frames,
-                           int total_bits,
-                           char *received_bits) {
+/* Message is split into 7-bit frames, each with its own parity bit.
+   Parity detects only an ODD number of flips inside one frame. */
+void parity(void) {
+    char input[MAX_STR], msg[MAX_BITS], transmitted[MAX_BITS], received[MAX_BITS];
+    char frame_str[9], recovered[MAX_BITS], recovered_str[MAX_STR];
+    int flipped[MAX_BITS], nflips = 0;
+    int len, scheme, t = 0, frame_no = 1, rlen = 0, error_found = 0, silent = 0;
 
-    int pos = 0;
+    printf("\n---- PARITY (7-bit frames) : SENDER SIDE ----\n");
+    printf("Enter string message (or b<binary> for binary): ");
+    scanf("%s", input);
+    scheme = ask_parity_scheme();
 
-    for (int i = 0; i < num_frames; i++) {
+    input_to_bits(input, msg);
+    len = strlen(msg);
+    printf("Original message (m) in binary              : %s\n", msg);
+    printf("Message split into 7-bit frames, each followed by its own parity bit:\n");
 
-        /* Copy only the 7 data bits.
-           The 8th bit is parity, so ignore it. */
-        for (int j = 0; j < FRAME_SIZE; j++) {
-
-            if (pos < total_bits) {
-                received_bits[pos] = tx_frames[i][j];
-                pos++;
-            }
+    for (int i = 0; i < len; i += 7, frame_no++) {
+        int fsize = (len - i < 7) ? len - i : 7, ones = 0;
+        for (int j = 0; j < fsize; j++) {
+            transmitted[t + j] = msg[i + j];
+            ones += msg[i + j] == '1';
         }
+        transmitted[t + fsize] = parity_bit(ones, scheme);
+        copy_bits(frame_str, transmitted + t, fsize + 1);
+        printf("  Frame %d (%d data bits) : %s   (parity bit = %c)\n",
+               frame_no, fsize, frame_str, transmitted[t + fsize]);
+        t += fsize + 1;
     }
+    transmitted[t] = '\0';
+    printf("Data to be sent (all frames concatenated)   : %s\n", transmitted);
 
-    received_bits[pos] = '\0';
-}
+    printf("\n---- PARITY : RECEIVER SIDE ----\n");
+    strcpy(received, transmitted);
+    simulate_multi_error(received, flipped, &nflips);
+    printf("Received data                                : %s\n", received);
+    printf("\nNote: a frame's parity only catches an ODD number of bit flips inside\n"
+           "that frame. An EVEN number of flips (2, 4, ...) inside the same frame\n"
+           "cancels out and the parity check will wrongly say the frame is OK.\n");
 
-/* Convert received binary data back to string */
-void bits_to_string(const char *bits, char *str) {
-
-    int bit_len = strlen(bits);
-    int char_count = bit_len / 8;
-
-    for (int i = 0; i < char_count; i++) {
-
-        char byte[9];
-
-        for (int j = 0; j < 8; j++) {
-            byte[j] = bits[i * 8 + j];
+    printf("\nChecking each frame:\n");
+    frame_no = 1;
+    for (int i = 0, pos = 0; i < len; i += 7, frame_no++) {
+        int fsize = (len - i < 7) ? len - i : 7, ones = 0, injected = 0;
+        for (int j = 0; j < fsize; j++) {
+            ones += received[pos + j] == '1';
+            recovered[rlen++] = received[pos + j];
         }
+        int detected = !no_error(ones + (received[pos + fsize] == '1'), scheme);
 
-        byte[8] = '\0';
+        for (int f = 0; f < nflips; f++)          /* how many flips landed in this frame */
+            if (flipped[f] >= pos && flipped[f] <= pos + fsize)
+                injected++;
 
-        str[i] = bin_to_ascii(byte);
-    }
-
-    str[char_count] = '\0';
-}
-
-int main() {
-
-    char input[MAX_STR];
-    char full_msg[MAX_BITS];
-
-    printf("\n========== SENDER SIDE ==========\n");
-
-    printf("Enter string message: ");
-    scanf("%99s", input);
-
-    int scheme = ask_parity_scheme();
-
-    str_to_bits(input, full_msg);
-
-    int total_bits = strlen(full_msg);
-
-    printf("\nFull Binary Message:\n%s\n", full_msg);
-
-    int num_frames = (total_bits + FRAME_SIZE - 1) / FRAME_SIZE;
-
-    char tx_frames[100][16];
-
-    printf("\n========== FRAME GENERATION ==========\n");
-
-    for (int i = 0; i < num_frames; i++) {
-
-        char current_frame[8] = {0};
-        int ones = 0;
-
-        for (int j = 0; j < FRAME_SIZE; j++) {
-
-            int idx = i * FRAME_SIZE + j;
-
-            if (idx < total_bits)
-                current_frame[j] = full_msg[idx];
-            else
-                current_frame[j] = '0';
-
-            if (current_frame[j] == '1')
-                ones++;
-        }
-
-        current_frame[FRAME_SIZE] = '\0';
-
-        char parity_bit = compute_parity_bit(ones, scheme);
-
-        sprintf(tx_frames[i], "%s%c", current_frame, parity_bit);
-
-        printf("Frame %2d : Data = %s | Parity = %c | Sent = %s\n",
-               i + 1,
-               current_frame,
-               parity_bit,
-               tx_frames[i]);
-    }
-
-    printf("\n========== RECEIVER SIDE ==========\n");
-
-    int frame_no;
-
-    printf("Enter frame number to corrupt (1-%d)\n", num_frames);
-    printf("Enter -1 for NO ERROR: ");
-    scanf("%d", &frame_no);
-
-    if (frame_no >= 1 && frame_no <= num_frames) {
-
-        int flips;
-
-        printf("\nHow many bits do you want to flip? ");
-        scanf("%d", &flips);
-
-        int frame_index = frame_no - 1;
-
-        for (int i = 0; i < flips; i++) {
-
-            int bit_pos;
-
-            printf("Enter bit position %d to flip (0-%d): ",
-                   i + 1, FRAME_SIZE);
-
-            scanf("%d", &bit_pos);
-
-            if (bit_pos >= 0 && bit_pos <= FRAME_SIZE) {
-
-                tx_frames[frame_index][bit_pos] =
-                    (tx_frames[frame_index][bit_pos] == '0')
-                        ? '1'
-                        : '0';
-
-                printf("Bit %d flipped successfully.\n", bit_pos);
-            }
-            else {
-                printf("Invalid bit position!\n");
-                i--;
-            }
-        }
-
-        printf("\nCorrupted Frame %d : %s\n",
-               frame_no,
-               tx_frames[frame_index]);
-    }
-    else {
-        printf("\nNo error introduced.\n");
-    }
-
-    printf("\n========== RECEIVER VERIFICATION ==========\n");
-
-    int global_error = 0;
-
-    for (int i = 0; i < num_frames; i++) {
-
-        int ones = 0;
-
-        for (int j = 0; j < strlen(tx_frames[i]); j++) {
-
-            if (tx_frames[i][j] == '1')
-                ones++;
-        }
-
-        int error = check_parity_error(ones, scheme);
-
-        printf("Frame %2d : %s | Total 1s = %d | %s\n",
-               i + 1,
-               tx_frames[i],
-               ones,
-               error ? "ERROR DETECTED" : "OK");
-
-        if (error)
-            global_error = 1;
-    }
-
-    printf("\n========== FINAL RESULT ==========\n");
-
-    if (global_error) {
-
-        printf("TRANSMISSION FAILED (Error Detected)\n");
-
-        printf("\nReceiver data is NOT extracted because\n");
-        printf("the received transmission contains an error.\n");
-    }
-    else {
-
-        printf("TRANSMISSION SUCCESSFUL (No Error Detected)\n");
-
-        /* ==========================================
-           EXTRACT RECEIVED DATA
-           ========================================== */
-
-        char received_bits[MAX_BITS];
-        char received_string[MAX_STR];
-
-        extract_received_data(
-            tx_frames,
-            num_frames,
-            total_bits,
-            received_bits
-        );
-
-        bits_to_string(
-            received_bits,
-            received_string
-        );
-
-        printf("\n========== RECEIVER DATA EXTRACTION ==========\n");
-
-        printf("Received Data Bits:\n%s\n", received_bits);
-
-        printf("\nExtracted Receiver Data:\n");
-        printf("%s\n", received_string);
-
-        /* Compare sender and receiver data */
-
-        if (strcmp(input, received_string) == 0) {
-            printf("\nData Verification: SUCCESS\n");
-            printf("Sender Data = Receiver Data\n");
-        }
+        copy_bits(frame_str, received + pos, fsize + 1);
+        printf("  Frame %d : %s  -> %s", frame_no, frame_str, detected ? "MISMATCH (error detected)" : "OK");
+        if (injected == 0)
+            printf("\n");
+        else if (injected % 2 == 1)
+            printf("   [%d bit(s) flipped in this frame - ODD - correctly DETECTED]\n", injected);
         else {
-            printf("\nData Verification: FAILED\n");
-            printf("Sender Data != Receiver Data\n");
+            printf("   [%d bit(s) flipped in this frame - EVEN - NOT DETECTED, parity still matches!]\n", injected);
+            silent = 1;
         }
+        error_found |= detected;
+        pos += fsize + 1;
     }
+    recovered[rlen] = '\0';
 
-    printf("\nNOTE:\n");
-    printf("Parity Check detects ODD number of bit errors.\n");
-    printf("Parity Check CANNOT detect EVEN number of bit errors.\n");
-
-    return 0;
+    if (error_found) {
+        printf("\nResult : ERROR DETECTED\n");
+        if (silent)
+            printf("(Note: some frame(s) above were also silently corrupted by an EVEN\n"
+                   "number of flips and did not trigger a mismatch on their own.)\n");
+        return;
+    }
+    printf("\nResult : NO ERROR DETECTED\n");
+    bits_to_str(recovered, recovered_str);
+    printf("Recovered message (string)                   : %s\n", recovered_str);
+    if (silent)
+        printf("WARNING: %d bit(s) were actually flipped during transmission, but every\n"
+               "affected frame had an EVEN flip count, so parity could not catch it.\n"
+               "The 'recovered' message above may NOT be the original message!\n", nflips);
 }
